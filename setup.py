@@ -2,25 +2,28 @@ import os
 import platform
 from setuptools import setup, Extension, find_packages
 
-# Define metadata
-NAME = "lens_format"
-VERSION = "4.0.1"
+# VERHINDERE IMPORT-FEHLER: 
+# Importiere NIEMALS etwas aus lens_format hier drin.
 
-# Define the Extension
-# We use .pyx as the primary source. pyproject.toml ensures Cython is there.
 ext_name = "lens_format.core"
+# Wir nutzen direkt .pyx - pyproject.toml stellt sicher, dass Cython da ist.
 source_path = os.path.join("lens_format", "core.pyx")
 
-# Compiler Flags
 if platform.system() == "Windows":
     extra_compile_args = ["/Ox", "/Oi", "/Ot", "/Gy", "/DNDEBUG"]
     extra_link_args = []
 else:
+    # Kein -march=native für maximale Wheel-Kompatibilität
     extra_compile_args = ["-O3", "-ffast-math", "-flto", "-DNDEBUG"]
     extra_link_args = ["-flto"]
 
-# We only attempt to cythonize if we can import it. 
-# This prevents the script from crashing during simple metadata checks.
+# Cython erst hier importieren, damit der Metadata-Check nicht crashed
+try:
+    from Cython.Build import cythonize
+    USE_CYTHON = True
+except ImportError:
+    USE_CYTHON = False
+
 extensions = [
     Extension(
         ext_name,
@@ -31,8 +34,7 @@ extensions = [
     )
 ]
 
-try:
-    from Cython.Build import cythonize
+if USE_CYTHON:
     extensions = cythonize(
         extensions,
         compiler_directives={
@@ -46,25 +48,21 @@ try:
             'infer_types': True,
         },
     )
-except ImportError:
-    # If Cython isn't available yet, we leave the extension as is.
-    # setuptools will handle the .pyx or look for a .c fallback later.
-    pass
 
 setup(
-    name=NAME,
-    version=VERSION,
-    description="High-performance binary serialization with frame-pooling and zero-copy.",
+    name="lens_format",
+    version="4.0.1",
     author="Vincent Noll",
     license="MIT",
-    packages=find_packages(),
+    # WICHTIG: Explizite Angabe, falls find_packages() im Container versagt
+    packages=["lens_format"],
     ext_modules=extensions,
     python_requires=">=3.8",
     zip_safe=False,
+    include_package_data=True,
     classifiers=[
         "Programming Language :: Python :: 3",
         "Programming Language :: Cython",
-        "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
 )
