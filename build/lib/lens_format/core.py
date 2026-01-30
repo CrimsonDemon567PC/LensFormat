@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LENS v3.2 – Hardened Reference Implementation (FIXED)
+LENS v3.1 – Hardened Reference Implementation (FIXED)
 
 Fixes applied:
 - Correct ZigZag encoding for Python BigInts
