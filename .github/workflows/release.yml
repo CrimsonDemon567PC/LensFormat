@@ -22,12 +22,13 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Cleanup workspace
+      - name: Cleanup & Local Debug
         run: |
+          echo "--- LOCAL DIRECTORY STRUCTURE ---"
+          ls -R
           rm -rf build/
           find . -name "*.so" -type f -delete
           find . -name "*.pyd" -type f -delete
-          find . -name "*.c" -type f -not -path "./lens_format/core.c" -delete
         shell: bash
 
       - run: python -m pip install cibuildwheel==2.16.2
@@ -37,7 +38,11 @@ jobs:
         env:
           CIBW_SKIP: "cp36-* cp37-* pp* *-musllinux_*"
           CIBW_ARCHS_MACOS: "x86_64 arm64"
-          CIBW_BUILD_VERBOSITY: 1
+          CIBW_BUILD_VERBOSITY: 3
+          CIBW_BEFORE_BUILD: |
+            echo "--- CONTAINER DEBUG: DISCOVERING FILES ---" && \
+            ls -R /project && \
+            pip install cython setuptools wheel
           CIBW_TEST_COMMAND: "python -c 'import lens_format; print(\"Lens loaded\")'"
 
       - uses: actions/upload-artifact@v4
