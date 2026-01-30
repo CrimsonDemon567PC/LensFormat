@@ -35,9 +35,10 @@ jobs:
       - name: Build Wheels
         run: python -m cibuildwheel --output-dir wheelhouse
         env:
-          CIBW_BEFORE_BUILD: "pip install cython && rm -rf build/"
+          CIBW_BEFORE_BUILD: "pip install cython"
           CIBW_SKIP: "cp36-* cp37-* pp* *-musllinux_*"
           CIBW_ARCHS_MACOS: "x86_64 arm64"
+          CIBW_BUILD_VERBOSITY: 1
           CIBW_TEST_COMMAND: "python -c 'import lens_format; print(\"Lens loaded\")'"
 
       - uses: actions/upload-artifact@v4
