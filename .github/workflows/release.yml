@@ -14,24 +14,28 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
+      # 1. Checkout repository
       - uses: actions/checkout@v4
 
+      # 2. Set up Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Upgrade pip & install build deps
+      # 3. Upgrade pip and install build dependencies
+      - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip
           pip install cibuildwheel==2.16.2 cython setuptools wheel numpy
 
+      # 4. Clean previous builds (cross-platform)
       - name: Clean previous builds
         run: |
-          rm -rf build/ dist/ *.egg-info wheelhouse
-          find . -name "*.so" -type f -delete
-          find . -name "*.pyd" -type f -delete
+          python -c "import shutil, os; [shutil.rmtree(d) for d in ['build','dist','wheelhouse'] if os.path.exists(d)]"
+          python -c "import glob, os; [os.remove(f) for f in glob.glob('*.egg-info') if os.path.exists(f)]"
 
+      # 5. Build wheels with cibuildwheel
       - name: Build wheels
         run: python -m cibuildwheel --output-dir wheelhouse
         env:
@@ -40,6 +44,7 @@ jobs:
           CIBW_BUILD_VERBOSITY: 3
           CIBW_TEST_COMMAND: "python -c 'import lens_format; print(\"Lens loaded\")'"
 
+      # 6. Upload built wheels as artifact
       - uses: actions/upload-artifact@v4
         with:
           name: lens-wheels-${{ matrix.os }}
@@ -50,11 +55,13 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     steps:
+      # Download wheels from previous job
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
+      # Upload to PyPI
       - name: Upload to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
