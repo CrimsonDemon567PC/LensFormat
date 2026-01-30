@@ -8,54 +8,47 @@ on:
 
 jobs:
   build_wheels:
-    name: Build für ${{ matrix.os }}
+    name: Build wheels on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
-      - name: Code auschecken
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Umgebung bereinigen
-        run: |
-          find . -name "*.so" -type f -delete
-          find . -name "*.c" -type f -delete
-          find . -name "*.pyd" -type f -delete
-          rm -rf build/
-        shell: bash
-
-      - name: Python einrichten
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: cibuildwheel installieren
-        run: python -m pip install cibuildwheel==2.16.2
+      - run: python -m pip install cibuildwheel==2.16.2
 
-      - name: Wheels bauen
+      - name: Build Wheels
         run: python -m cibuildwheel --output-dir wheelhouse
+        env:
+          CIBW_BEFORE_BUILD: "pip install cython"
+          CIBW_SKIP: "cp36-* cp37-* pp* *-musllinux_*"
+          CIBW_ARCHS_MACOS: "x86_64 arm64"
+          CIBW_TEST_COMMAND: "python -c 'import lens_format; print(\"Lens loaded\")'"
 
-      - name: Binärdateien speichern
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: lens-wheels-${{ matrix.os }}
           path: ./wheelhouse/*.whl
 
   publish:
-    name: Auf PyPI veröffentlichen
+    name: Publish to PyPI
     needs: [build_wheels]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     steps:
-      - name: Wheels laden
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
-      - name: Upload zu PyPI
+      - name: Upload to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
