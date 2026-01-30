@@ -2,34 +2,25 @@ import os
 import platform
 from setuptools import setup, Extension, find_packages
 
-# 1. Cython Check
-try:
-    from Cython.Build import cythonize
-    USE_CYTHON = True
-except ImportError:
-    USE_CYTHON = False
+# Define metadata
+NAME = "lens_format"
+VERSION = "4.0.1"
 
-# 2. Extension Name and Path Logic
+# Define the Extension
+# We use .pyx as the primary source. pyproject.toml ensures Cython is there.
 ext_name = "lens_format.core"
-pyx_path = os.path.join("lens_format", "core.pyx")
-c_path = os.path.join("lens_format", "core.c")
+source_path = os.path.join("lens_format", "core.pyx")
 
-# Force .c if Cython is missing, otherwise use .pyx
-if USE_CYTHON and os.path.exists(pyx_path):
-    source_path = pyx_path
-else:
-    source_path = c_path
-
-# 3. Compiler Flags
+# Compiler Flags
 if platform.system() == "Windows":
     extra_compile_args = ["/Ox", "/Oi", "/Ot", "/Gy", "/DNDEBUG"]
     extra_link_args = []
 else:
-    # Removed -march=native for better compatibility in CI/CD wheels
     extra_compile_args = ["-O3", "-ffast-math", "-flto", "-DNDEBUG"]
     extra_link_args = ["-flto"]
 
-# 4. Definition of the Extension
+# We only attempt to cythonize if we can import it. 
+# This prevents the script from crashing during simple metadata checks.
 extensions = [
     Extension(
         ext_name,
@@ -40,8 +31,8 @@ extensions = [
     )
 ]
 
-# 5. Apply Cythonize
-if USE_CYTHON and source_path.endswith(".pyx"):
+try:
+    from Cython.Build import cythonize
     extensions = cythonize(
         extensions,
         compiler_directives={
@@ -55,17 +46,19 @@ if USE_CYTHON and source_path.endswith(".pyx"):
             'infer_types': True,
         },
     )
+except ImportError:
+    # If Cython isn't available yet, we leave the extension as is.
+    # setuptools will handle the .pyx or look for a .c fallback later.
+    pass
 
-# 6. Setup Call
 setup(
-    name="lens_format",
-    version="4.0.1",
+    name=NAME,
+    version=VERSION,
     description="High-performance binary serialization with frame-pooling and zero-copy.",
     author="Vincent Noll",
     license="MIT",
     packages=find_packages(),
     ext_modules=extensions,
-    install_requires=[],
     python_requires=">=3.8",
     zip_safe=False,
     classifiers=[
