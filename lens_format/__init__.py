@@ -1,12 +1,12 @@
 """
 Lens Protocol - High Performance Binary Serialization
 Version: v4.0.0
-Features: Frame-Pooling, Zero-Copy, T_EXT Adapter, Lazy Diagnostics
+Features: Aggressive Frame-Pooling, Zero-Copy EXT, UTC-Optimized, C-Stack-Logic
 """
 
 import sys
 
-# Wir importieren die C-Klassen aus der kompilierten Extension
+# Import C-extension classes
 try:
     from .core import (
         FastEncoder,
@@ -16,7 +16,6 @@ try:
         LensEncodeError
     )
 except ImportError as e:
-    # Hilfreiche Fehlermeldung, falls die Extension nicht kompiliert wurde
     raise ImportError(
         f"Failed to import the Lens C-extension. Ensure it is compiled correctly. "
         f"Original error: {e}"
@@ -24,50 +23,42 @@ except ImportError as e:
 
 __version__ = "4.0.0"
 
-def dumps(obj, sym_map=None, sym_limit=10000, adapter=None, max_depth=1000):
+def dumps(obj, symbols, ext_handler=None):
     """
     Serializes a Python object into the Lens binary format.
     
     :param obj: Object to serialize.
-    :param sym_map: Dictionary for symbol reuse.
-    :param sym_limit: Maximum number of unique keys.
-    :param adapter: Hook for custom types (ext_id, bytes).
-    :param max_depth: Safety limit for nesting.
-    :return: (bytes, dict) - The binary data and final symbol map.
+    :param symbols: List of strings used for T_SYMREF keys.
+    :param ext_handler: Optional hook function(obj) -> (ext_id, bytes).
+    :return: bytes - The binary data.
     """
-    encoder = FastEncoder(
-        sym_map=sym_map, 
-        sym_limit=sym_limit, 
-        adapter=adapter, 
-        max_depth=max_depth
-    )
-    return encoder.encode_all(obj)
+    encoder = FastEncoder(symbols, ext_handler=ext_handler)
+    return encoder.encode(obj)
 
-def loads(data, symbols, zero_copy=False, ext_hook=None, ts_hook=None, max_depth=1000):
+def loads(data, symbols, zero_copy=False, ext_hook=None, ts_hook=None):
     """
     Deserializes Lens binary data back into Python objects.
     
     :param data: bytes or memoryview of the source.
     :param symbols: List of strings for key resolution.
-    :param zero_copy: If True, returns memoryview slices for strings/bytes.
-    :param ext_hook: Hook for T_EXT tags (tag_id, payload).
-    :param ts_hook: Hook for custom timestamp objects.
-    :param max_depth: Safety limit for nesting.
+    :param zero_copy: If True, returns memoryview slices for T_BYTES and T_EXT.
+    :param ext_hook: Hook for T_EXT tags: func(ext_id, payload_view).
+    :param ts_hook: Optional hook for custom timestamp objects: func(milliseconds).
+    :return: Python object (dict, list, etc.)
     """
     decoder = FastDecoder(
         data, 
         symbols, 
         zero_copy=zero_copy, 
         ext_hook=ext_hook, 
-        ts_hook=ts_hook, 
-        max_depth=max_depth
+        ts_hook=ts_hook
     )
     return decoder.decode_all()
 
 def set_debug(enabled: bool):
     """
     Enables extended debug mode in the C-extension.
-    Provides path-traces and hex-dumps on errors.
+    Note: Requires DEBUG flag support in core.pyx.
     """
     from . import core
     core.DEBUG = enabled
