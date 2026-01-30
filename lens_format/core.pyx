@@ -7,10 +7,14 @@ from cpython.list cimport PyList_New, PyList_SET_ITEM
 from cpython.dict cimport PyDict_New, PyDict_SetItem
 from cpython.tuple cimport PyTuple_New, PyTuple_SET_ITEM
 from cpython.set cimport PySet_New, PySet_Add
-from posix.types cimport Py_ssize_t
+from cpython.ref cimport Py_INCREF
 from datetime import datetime, timezone
 
-# Cache UTC for faster datetime creation
+# Define Errors within the extension to prevent NameErrors
+class LensError(Exception): pass
+class LensEncodeError(LensError): pass
+class LensDecodeError(LensError): pass
+
 cdef object UTC = timezone.utc
 
 cdef extern from *:
@@ -50,6 +54,9 @@ cdef class DecodeFrame:
     cdef public Py_ssize_t remaining, list_idx
     cdef public object current_key
     cdef public bint is_dict
+
+    def __init__(self, object container, Py_ssize_t remaining, bint is_dict):
+        self.reset(container, remaining, is_dict)
 
     cdef inline void reset(self, object container, Py_ssize_t remaining, bint is_dict):
         self.container = container
@@ -156,7 +163,6 @@ cdef class FastDecoder:
     cdef const unsigned char[:] buffer
     cdef Py_ssize_t pos, size
     cdef list symbols
-    # Aggressive Frame Pooling: C-array instead of list
     cdef DecodeFrame frame_pool[32]
     cdef int pool_idx
     cdef bint zero_copy
@@ -175,7 +181,7 @@ cdef class FastDecoder:
         for i in range(32):
             self.frame_pool[i] = DecodeFrame(None, 0, False)
 
-    cdef inline uint64_t _read_varint_nogil(self) nogil except *:
+    cdef inline uint64_t _read_varint(self) except *:
         cdef uint64_t res = 0
         cdef int shift = 0
         cdef unsigned char b
@@ -215,7 +221,7 @@ cdef class FastDecoder:
                 
                 if frame.is_dict and frame.current_key is None:
                     self.pos += 1 # Skip T_SYMREF
-                    frame.current_key = self.symbols[self._read_varint_nogil()]
+                    frame.current_key = self.symbols[self._read_varint()]
                     continue
 
             tag = self.buffer[self.pos]
@@ -224,7 +230,7 @@ cdef class FastDecoder:
             if tag == T_NULL: val = None
             elif tag == T_TRUE: val = True
             elif tag == T_FALSE: val = False
-            elif tag == T_INT: val = c_zigzag_decode(self._read_varint_nogil())
+            elif tag == T_INT: val = c_zigzag_decode(self._read_varint())
             elif tag == T_FLOAT:
                 memcpy(&bits, &self.buffer[self.pos], 8)
                 self.pos += 8
@@ -232,43 +238,42 @@ cdef class FastDecoder:
                 memcpy(&fval, &bits, 8)
                 val = fval
             elif tag == T_STR:
-                ln = <Py_ssize_t>self._read_varint_nogil()
+                ln = <Py_ssize_t>self._read_varint()
                 start = self.pos; self.pos += ln
-                val = PyBytes_FromStringAndSize(<char*>&self.buffer[start], ln).decode('utf-8')
+                val = self.buffer[start:self.pos].tobytes().decode('utf-8')
             elif tag == T_BYTES:
-                ln = <Py_ssize_t>self._read_varint_nogil()
+                ln = <Py_ssize_t>self._read_varint()
                 start = self.pos; self.pos += ln
-                val = self.buffer[start:self.pos] if self.zero_copy else PyBytes_FromStringAndSize(<char*>&self.buffer[start], ln)
+                val = self.buffer[start:self.pos] if self.zero_copy else self.buffer[start:self.pos].tobytes()
             elif tag == T_SYMREF:
-                val = self.symbols[self._read_varint_nogil()]
+                val = self.symbols[self._read_varint()]
             elif tag == T_TIME:
-                var_int = c_zigzag_decode(self._read_varint_nogil())
+                var_int = c_zigzag_decode(self._read_varint())
                 if self.ts_hook: val = self.ts_hook(var_int)
                 else: val = datetime.fromtimestamp(var_int / 1000.0, tz=UTC)
             elif tag == T_EXT:
-                var_int = self._read_varint_nogil() # ID
-                ln = <Py_ssize_t>self._read_varint_nogil() # Length
+                var_int = self._read_varint() # ID
+                ln = <Py_ssize_t>self._read_varint() # Length
                 start = self.pos; self.pos += ln
-                # ZERO-COPY EXT: pass memoryview slice directly
                 val = self.ext_hook(var_int, self.buffer[start:self.pos]) if self.ext_hook else (var_int, self.buffer[start:self.pos])
             elif tag == T_ARR:
-                var_int = self._read_varint_nogil()
+                var_int = self._read_varint()
                 if var_int == 0: val = []
                 else:
                     stack.append(self._push_frame(PyList_New(var_int), var_int, False))
                     continue 
             elif tag == T_OBJ:
-                var_int = self._read_varint_nogil()
+                var_int = self._read_varint()
                 if var_int == 0: val = {}
                 else:
                     stack.append(self._push_frame(PyDict_New(), var_int, True))
                     continue 
             elif tag == T_TUPLE:
-                var_int = self._read_varint_nogil()
+                var_int = self._read_varint()
                 stack.append(self._push_frame(PyTuple_New(var_int), var_int, False))
                 continue
             elif tag == T_SET:
-                var_int = self._read_varint_nogil()
+                var_int = self._read_varint()
                 stack.append(self._push_frame(PySet_New(None), var_int, False))
                 continue
             else: raise LensDecodeError(f"Unknown tag {tag}")
@@ -281,11 +286,15 @@ cdef class FastDecoder:
             PyDict_SetItem(frame.container, frame.current_key, val)
             frame.current_key = None
         else:
+            # Crucial: PyList_SET_ITEM steals a reference. 
+            # We must manually increment the reference count of 'val'
+            Py_INCREF(val) 
             if isinstance(frame.container, list):
                 PyList_SET_ITEM(frame.container, frame.list_idx, val)
                 frame.list_idx += 1
             elif isinstance(frame.container, tuple):
                 PyTuple_SET_ITEM(frame.container, frame.list_idx, val)
                 frame.list_idx += 1
-            else: PySet_Add(frame.container, val)
+            else:
+                PySet_Add(frame.container, val)
         frame.remaining -= 1
