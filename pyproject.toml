@@ -1,3 +1,5 @@
 [build-system]
 requires = ["setuptools>=42","cython>=3.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
+[tool.cibuildwheel]
+build = "cp39-* cp310-* cp311-* cp312-*"
