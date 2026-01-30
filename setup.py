@@ -1,5 +1,8 @@
 from setuptools import setup, find_packages
 
+with open("README.md", "r", encoding="utf-8") as f:
+    readme_content = f.read()
+
 setup(
     name="lens_format",
     version="3.1.0",
