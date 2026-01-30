@@ -76,3 +76,6 @@ Max Array/Object Size: 1,000,000 elements
 Max Symbols: 250,000
 
 Max Decompressed Payload: 512 MB
+
+# License
+MIT
