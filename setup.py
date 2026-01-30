@@ -58,9 +58,9 @@ if USE_CYTHON and source_path.endswith(".pyx"):
 # 6. Setup
 setup(
     name="lens_format",
-    version="4.0.0",
+    version="4.0.1",
     description="High-performance binary serialization with frame-pooling and zero-copy.",
-    author="Gemini & Peer",
+    author="Vincent Noll",
     license="MIT",
     packages=find_packages(),
     ext_modules=extensions,
