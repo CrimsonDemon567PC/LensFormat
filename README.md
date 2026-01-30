@@ -40,8 +40,8 @@ data = {
 
 try:
     # Encoding to binary
-    # Set compress=True to enable zlib compression with safety limits
-    binary_payload = LensFormat.encode(data, compress=True)
+    # Set compress=compress to enable zlib compression with safety limits
+    binary_payload = LensFormat.encode(data, compress=compress)
 
     # Decoding back to Python objects
     parsed_data = LensFormat.decode(binary_payload)
