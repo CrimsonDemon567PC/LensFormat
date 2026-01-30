@@ -1,68 +1,59 @@
 import os
+import sys
 import platform
 from setuptools import setup, Extension, find_packages
 
-# VERHINDERE IMPORT-FEHLER: 
-# Importiere NIEMALS etwas aus lens_format hier drin.
+NAME = "lens_format"
+VERSION = "4.0.1"
 
-ext_name = "lens_format.core"
-# Wir nutzen direkt .pyx - pyproject.toml stellt sicher, dass Cython da ist.
-source_path = os.path.join("lens_format", "core.pyx")
+def get_extensions():
+    base_dir = os.path.abspath(os.path.dirname(__file__))
+    source_path = os.path.join(base_dir, "lens_format", "core.pyx")
+    
+    if not os.path.exists(source_path):
+        source_path = source_path.replace(".pyx", ".c")
+        if not os.path.exists(source_path):
+            return []
 
-if platform.system() == "Windows":
-    extra_compile_args = ["/Ox", "/Oi", "/Ot", "/Gy", "/DNDEBUG"]
-    extra_link_args = []
-else:
-    # Kein -march=native für maximale Wheel-Kompatibilität
-    extra_compile_args = ["-O3", "-ffast-math", "-flto", "-DNDEBUG"]
-    extra_link_args = ["-flto"]
+    if platform.system() == "Windows":
+        extra_args = ["/Ox", "/Oi", "/Ot", "/DNDEBUG"]
+        extra_link = []
+    else:
+        extra_args = ["-O3", "-ffast-math", "-DNDEBUG"]
+        extra_link = []
 
-# Cython erst hier importieren, damit der Metadata-Check nicht crashed
-try:
-    from Cython.Build import cythonize
-    USE_CYTHON = True
-except ImportError:
-    USE_CYTHON = False
-
-extensions = [
-    Extension(
-        ext_name,
+    ext = Extension(
+        "lens_format.core",
         sources=[source_path],
-        extra_compile_args=extra_compile_args,
-        extra_link_args=extra_link_args,
+        extra_compile_args=extra_args,
+        extra_link_args=extra_link,
         define_macros=[("NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION")],
     )
-]
 
-if USE_CYTHON:
-    extensions = cythonize(
-        extensions,
-        compiler_directives={
-            'language_level': "3",
-            'boundscheck': False,
-            'wraparound': False,
-            'initializedcheck': False,
-            'cdivision': True,
-            'nonecheck': False,
-            'overflowcheck': False,
-            'infer_types': True,
-        },
-    )
+    try:
+        from Cython.Build import cythonize
+        return cythonize(
+            [ext],
+            compiler_directives={
+                'language_level': "3",
+                'boundscheck': False,
+                'wraparound': False,
+                'initializedcheck': False,
+                'cdivision': True,
+                'infer_types': True,
+            },
+        )
+    except ImportError:
+        return [ext]
 
 setup(
-    name="lens_format",
-    version="4.0.1",
+    name=NAME,
+    version=VERSION,
     author="Vincent Noll",
     license="MIT",
-    # WICHTIG: Explizite Angabe, falls find_packages() im Container versagt
-    packages=["lens_format"],
-    ext_modules=extensions,
+    packages=find_packages(exclude=["tests*", "benchmarks*"]),
+    ext_modules=get_extensions(),
     python_requires=">=3.8",
     zip_safe=False,
-    include_package_data=True,
-    classifiers=[
-        "Programming Language :: Python :: 3",
-        "Programming Language :: Cython",
-        "Operating System :: OS Independent",
-    ],
+    install_requires=[], 
 )
