@@ -9,26 +9,27 @@ try:
 except ImportError:
     USE_CYTHON = False
 
-# 2. Extension Name und Pfad-Logik
+# 2. Extension Name and Path Logic
 ext_name = "lens_format.core"
-# Wir prüfen, ob die .pyx Datei existiert (wichtig für Entwickler)
 pyx_path = os.path.join("lens_format", "core.pyx")
 c_path = os.path.join("lens_format", "core.c")
 
+# Force .c if Cython is missing, otherwise use .pyx
 if USE_CYTHON and os.path.exists(pyx_path):
     source_path = pyx_path
 else:
     source_path = c_path
 
-# 3. Compiler-Flags
+# 3. Compiler Flags
 if platform.system() == "Windows":
     extra_compile_args = ["/Ox", "/Oi", "/Ot", "/Gy", "/DNDEBUG"]
     extra_link_args = []
 else:
-    extra_compile_args = ["-O3", "-march=native", "-ffast-math", "-flto", "-DNDEBUG"]
+    # Removed -march=native for better compatibility in CI/CD wheels
+    extra_compile_args = ["-O3", "-ffast-math", "-flto", "-DNDEBUG"]
     extra_link_args = ["-flto"]
 
-# 4. Definition der Extension (ohne sofortiges cythonize)
+# 4. Definition of the Extension
 extensions = [
     Extension(
         ext_name,
@@ -39,7 +40,7 @@ extensions = [
     )
 ]
 
-# 5. Cythonize Directives (nur anwenden, wenn nötig)
+# 5. Apply Cythonize
 if USE_CYTHON and source_path.endswith(".pyx"):
     extensions = cythonize(
         extensions,
@@ -55,7 +56,7 @@ if USE_CYTHON and source_path.endswith(".pyx"):
         },
     )
 
-# 6. Setup
+# 6. Setup Call
 setup(
     name="lens_format",
     version="4.0.1",
@@ -65,8 +66,12 @@ setup(
     packages=find_packages(),
     ext_modules=extensions,
     install_requires=[],
-    # setup_requires ist oft die Ursache für Code 1 in CI. 
-    # Es wird durch die pyproject.toml (unten) ersetzt.
     python_requires=">=3.8",
     zip_safe=False,
+    classifiers=[
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Cython",
+        "License :: OSI Approved :: MIT License",
+        "Operating System :: OS Independent",
+    ],
 )
