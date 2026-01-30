@@ -20,7 +20,7 @@ Rich Types: Supports null, bool, int, float, string, bytes, datetime (UTC), arra
 
 # Installation
 ```bash
-pip install lens_format
+pip install lens-format
 ```
 # Usage
 The library is designed to be a drop-in replacement for logic where JSON might be too bulky or insecure.
