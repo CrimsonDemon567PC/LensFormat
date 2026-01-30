@@ -1,10 +1,10 @@
-name: Lens Format Release (Multi-Plattform)
+name: Lens Format Release
 
 on:
   push:
     tags:
-      - 'v*' 
-  workflow_dispatch: 
+      - 'v*'
+  workflow_dispatch:
 
 jobs:
   build_wheels:
@@ -12,12 +12,19 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-  
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - name: Code auschecken
         uses: actions/checkout@v4
+
+      - name: Umgebung bereinigen
+        run: |
+          find . -name "*.so" -type f -delete
+          find . -name "*.c" -type f -delete
+          find . -name "*.pyd" -type f -delete
+          rm -rf build/
+        shell: bash
 
       - name: Python einrichten
         uses: actions/setup-python@v5
@@ -29,9 +36,8 @@ jobs:
 
       - name: Wheels bauen
         run: python -m cibuildwheel --output-dir wheelhouse
-        
 
-      - name: Binärdateien speichern (Artifacts)
+      - name: Binärdateien speichern
         uses: actions/upload-artifact@v4
         with:
           name: lens-wheels-${{ matrix.os }}
