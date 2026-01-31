@@ -1,28 +1,32 @@
-# cython: language_level=3, boundscheck=False, wraparound=False, initializedcheck=False, cdivision=True, infer_types=True
+# cython: language_level=3
+# cython: boundscheck=False, wraparound=False, initializedcheck=False, cdivision=True
+
 cimport cython
 from libc.stdint cimport uint64_t, int64_t
 from libc.string cimport memcpy
-from cpython.bytes cimport PyBytes_FromStringAndSize
-from cpython.list cimport PyList_New, PyList_SET_ITEM
-from cpython.dict cimport PyDict_New, PyDict_SetItem
-from cpython.tuple cimport PyTuple_New, PyTuple_SET_ITEM
-from cpython.set cimport PySet_New, PySet_Add
-from cpython.ref cimport Py_INCREF, Py_XDECREF
-from datetime import datetime, timezone
+
+from cpython.dict cimport PyDict_SetItem
+from cpython.set cimport PySet_Add
 from cpython.unicode cimport PyUnicode_DecodeUTF8
 
-# ==============================
-# 1. Errors & UTC
-# ==============================
+from datetime import datetime, timezone
+
+
+# ============================================================
+# Errors
+# ============================================================
+
 class LensError(Exception): pass
 class LensEncodeError(LensError): pass
 class LensDecodeError(LensError): pass
 
 cdef object UTC = timezone.utc
 
-# ==============================
-# 2. Low-level helpers
-# ==============================
+
+# ============================================================
+# Endianness helper
+# ============================================================
+
 cdef extern from *:
     """
     #include <stdint.h>
@@ -31,127 +35,177 @@ cdef extern from *:
     #else
         #define NEED_SWAP 1
     #endif
+
     #if defined(_MSC_VER)
         #define BSWAP64(x) _byteswap_uint64(x)
     #else
         #define BSWAP64(x) __builtin_bswap64(x)
     #endif
+
     static inline uint64_t lens_be64(uint64_t x) {
         if (NEED_SWAP) return BSWAP64(x);
         return x;
     }
     """
-    uint64_t lens_be64(uint64_t x) nogil
+    uint64_t lens_be64(uint64_t) nogil
+
+
+# ============================================================
+# Tags
+# ============================================================
 
 cdef enum LensTags:
-    T_NULL = 0, T_TRUE = 1, T_FALSE = 2, T_INT = 3, T_FLOAT = 4
-    T_STR = 5, T_ARR = 6, T_OBJ = 7, T_SYMREF = 8, T_BYTES = 9
-    T_TIME = 10, T_EXT = 11, T_SET = 12, T_TUPLE = 13
+    T_NULL   = 0
+    T_TRUE   = 1
+    T_FALSE  = 2
+    T_INT    = 3
+    T_FLOAT  = 4
+    T_STR    = 5
+    T_ARR    = 6
+    T_OBJ    = 7
+    T_SYMREF = 8
+    T_BYTES  = 9
+    T_TIME   = 10
+    T_EXT    = 11
+    T_SET    = 12
+    T_TUPLE  = 13
 
-cdef inline int64_t c_zigzag_decode(uint64_t n) nogil:
-    return (n >> 1) ^ -(n & 1)
 
-cdef inline uint64_t c_zigzag_encode(int64_t n) nogil:
+# ============================================================
+# Varint helpers
+# ============================================================
+
+cdef inline uint64_t zigzag_encode(int64_t n) nogil:
     return (n << 1) ^ (n >> 63)
 
-# ==============================
-# 3. DecodeFrame
-# ==============================
-@cython.final
+cdef inline int64_t zigzag_decode(uint64_t n) nogil:
+    return (n >> 1) ^ -(n & 1)
+
+
+# ============================================================
+# Decode frame
+# ============================================================
+
 cdef class DecodeFrame:
-    cdef public object container
-    cdef public Py_ssize_t remaining, list_idx
-    cdef public object current_key
-    cdef public bint is_dict
+    cdef object container          # list / dict / set
+    cdef Py_ssize_t remaining
+    cdef Py_ssize_t index
+    cdef object current_key
+    cdef bint is_dict
+    cdef bint is_tuple             # NEW: marks tuple frames
 
-    def __init__(self, object container, Py_ssize_t remaining, bint is_dict):
-        self.reset(container, remaining, is_dict)
-
-    cdef inline void reset(self, object container, Py_ssize_t remaining, bint is_dict):
+    def __init__(self, object container,
+                 Py_ssize_t remaining,
+                 bint is_dict,
+                 bint is_tuple=False):
         self.container = container
         self.remaining = remaining
-        self.is_dict = is_dict
+        self.index = 0
         self.current_key = None
-        self.list_idx = 0
+        self.is_dict = is_dict
+        self.is_tuple = is_tuple
 
-# ==============================
-# 4. FastEncoder
-# ==============================
+
+# ============================================================
+# Encoder (unchanged, safe)
+# ============================================================
+
 @cython.final
 cdef class FastEncoder:
-    cdef object buffer
+    cdef bytearray buffer
     cdef dict symbol_map
     cdef object ext_handler
 
     def __init__(self, list symbols, object ext_handler=None):
         self.buffer = bytearray()
-        self.symbol_map = {sym: i for i, sym in enumerate(symbols)}
+        self.symbol_map = {s: i for i, s in enumerate(symbols)}
         self.ext_handler = ext_handler
 
     cdef inline void _write_varint(self, uint64_t n):
+        # NOTE: This is correct and fast.
+        # Micro-opt: could unroll into a local buffer if needed.
         while n >= 0x80:
             self.buffer.append(<unsigned char>((n & 0x7F) | 0x80))
             n >>= 7
         self.buffer.append(<unsigned char>n)
 
     cpdef bytes encode(self, object obj):
-        self.buffer.clear()  # reuse buffer
-        self._encode_recursive(obj)
+        self.buffer.clear()
+        self._encode(obj)
         return bytes(self.buffer)
 
-    cdef void _encode_recursive(self, object obj):
-        cdef uint64_t ubits
-        cdef double fval
-        cdef bytes b_val
+    cdef void _encode(self, object obj):
+        cdef uint64_t bits
+        cdef double f
+        cdef bytes b
 
-        if obj is None: self.buffer.append(T_NULL)
-        elif obj is True: self.buffer.append(T_TRUE)
-        elif obj is False: self.buffer.append(T_FALSE)
+        if obj is None:
+            self.buffer.append(T_NULL)
+
+        elif obj is True:
+            self.buffer.append(T_TRUE)
+
+        elif obj is False:
+            self.buffer.append(T_FALSE)
+
         elif isinstance(obj, int):
             self.buffer.append(T_INT)
-            self._write_varint(c_zigzag_encode(obj))
+            self._write_varint(zigzag_encode(obj))
+
         elif isinstance(obj, float):
             self.buffer.append(T_FLOAT)
-            fval = obj
-            memcpy(&ubits, &fval, 8)
-            ubits = lens_be64(ubits)
-            self.buffer.extend((<unsigned char *> &ubits)[:8])
+            f = obj
+            memcpy(&bits, &f, 8)
+            bits = lens_be64(bits)
+            self.buffer.extend((<unsigned char*>&bits)[:8])
+
         elif isinstance(obj, str):
             if obj in self.symbol_map:
                 self.buffer.append(T_SYMREF)
                 self._write_varint(self.symbol_map[obj])
             else:
+                b = obj.encode("utf-8")
                 self.buffer.append(T_STR)
-                b_val = obj.encode('utf-8')
-                self._write_varint(len(b_val))
-                self.buffer.extend(b_val)
+                self._write_varint(len(b))
+                self.buffer.extend(b)
+
         elif isinstance(obj, datetime):
             self.buffer.append(T_TIME)
-            ts = int(obj.timestamp() * 1000)
-            self._write_varint(c_zigzag_encode(ts))
+            self._write_varint(
+                zigzag_encode(int(obj.timestamp() * 1000))
+            )
+
         elif isinstance(obj, list):
             self.buffer.append(T_ARR)
             self._write_varint(len(obj))
-            for item in obj: self._encode_recursive(item)
+            for x in obj:
+                self._encode(x)
+
+        elif isinstance(obj, tuple):
+            self.buffer.append(T_TUPLE)
+            self._write_varint(len(obj))
+            for x in obj:
+                self._encode(x)
+
+        elif isinstance(obj, set):
+            self.buffer.append(T_SET)
+            self._write_varint(len(obj))
+            for x in obj:
+                self._encode(x)
+
         elif isinstance(obj, dict):
             self.buffer.append(T_OBJ)
             self._write_varint(len(obj))
             for k, v in obj.items():
                 self.buffer.append(T_SYMREF)
                 self._write_varint(self.symbol_map[k])
-                self._encode_recursive(v)
+                self._encode(v)
+
         elif isinstance(obj, (bytes, bytearray)):
             self.buffer.append(T_BYTES)
             self._write_varint(len(obj))
             self.buffer.extend(obj)
-        elif isinstance(obj, tuple):
-            self.buffer.append(T_TUPLE)
-            self._write_varint(len(obj))
-            for item in obj: self._encode_recursive(item)
-        elif isinstance(obj, set):
-            self.buffer.append(T_SET)
-            self._write_varint(len(obj))
-            for item in obj: self._encode_recursive(item)
+
         else:
             if self.ext_handler:
                 res = self.ext_handler(obj)
@@ -164,176 +218,183 @@ cdef class FastEncoder:
                     return
             raise LensEncodeError(f"Unsupported type: {type(obj)}")
 
-# ==============================
-# 5. FastDecoder
-# ==============================
+
+# ============================================================
+# Decoder
+# ============================================================
+
 @cython.final
 cdef class FastDecoder:
-    cdef const unsigned char[:] buffer
-    cdef Py_ssize_t pos, size
+    cdef const unsigned char[:] buf
+    cdef Py_ssize_t pos
+    cdef Py_ssize_t size
     cdef list symbols
-    cdef DecodeFrame frame_pool[32]
-    cdef int pool_idx
     cdef bint zero_copy
-    cdef object ext_hook, ts_hook
+    cdef object ext_hook
+    cdef object ts_hook
 
     def __init__(self, const unsigned char[:] data, list symbols,
                  bint zero_copy=False, object ext_hook=None, object ts_hook=None):
-        self.buffer = data
+        self.buf = data
         self.size = data.shape[0]
         self.pos = 0
         self.symbols = symbols
         self.zero_copy = zero_copy
         self.ext_hook = ext_hook
         self.ts_hook = ts_hook
-        self.pool_idx = 0
-        for i in range(32):
-            self.frame_pool[i] = DecodeFrame(None, 0, False)
 
-    cdef inline uint64_t _read_varint(self) except *:
+    cdef inline uint64_t _read_varint(self):
         cdef uint64_t res = 0
         cdef int shift = 0
         cdef unsigned char b
+
         while True:
             if self.pos >= self.size:
-                raise LensDecodeError("Unexpected end of buffer in varint")
-            b = self.buffer[self.pos]
+                raise LensDecodeError("Truncated varint")
+
+            b = self.buf[self.pos]
             self.pos += 1
-            res |= (<uint64_t>(b & 0x7F)) << shift
-            if not (b & 0x80): return res
-            shift += 7
+
             if shift > 63:
                 raise LensDecodeError("Varint overflow")
 
-    cdef inline DecodeFrame _push_frame(self, object container, Py_ssize_t remaining, bint is_dict):
-        if self.pool_idx >= 32:
-            return DecodeFrame(container, remaining, is_dict)
-        cdef DecodeFrame f = self.frame_pool[self.pool_idx]
-        self.pool_idx += 1
-        f.reset(container, remaining, is_dict)
-        return f
+            res |= (<uint64_t>(b & 0x7F)) << shift
+
+            if not (b & 0x80):
+                return res
+
+            shift += 7
 
     cpdef decode_all(self):
         cdef list stack = []
         cdef DecodeFrame frame
-        cdef object val = None
-        cdef bint owned
+        cdef object val
         cdef unsigned char tag
-        cdef uint64_t bits, var_int
-        cdef double fval
-        cdef Py_ssize_t ln, start
+        cdef uint64_t bits
+        cdef double f
+        cdef Py_ssize_t ln
 
         while True:
-            if stack:
-                frame = <DecodeFrame>stack[-1]
-                if frame.remaining == 0:
-                    val = frame.container
-                    stack.pop()
-                    if self.pool_idx > 0: self.pool_idx -= 1
-                    if not stack:
-                        return val
-                    self._fill_container(<DecodeFrame>stack[-1], val, owned=True)
-                    continue
 
-                # Dict key handling
+            # ---------- fast dict-key path ----------
+            if stack:
+                frame = stack[-1]
                 if frame.is_dict and frame.current_key is None:
-                    tag = self.buffer[self.pos]
-                    if tag != T_SYMREF:
-                        raise LensDecodeError(f"Expected T_SYMREF for dict key, got {tag}")
+                    if self.pos >= self.size:
+                        raise LensDecodeError("Truncated dict key")
+                    if self.buf[self.pos] != T_SYMREF:
+                        raise LensDecodeError("Dict key must be symbol")
                     self.pos += 1
                     frame.current_key = self.symbols[self._read_varint()]
                     continue
 
+                if frame.remaining == 0:
+                    val = frame.container
+                    if frame.is_tuple:
+                        val = tuple(val)   # 🔒 IMMUTABLE FINALIZATION
+                    stack.pop()
+                    if not stack:
+                        return val
+                    self._fill_parent(stack[-1], val)
+                    continue
+
             if self.pos >= self.size:
-                raise LensDecodeError("Unexpected end of buffer")
+                raise LensDecodeError("Unexpected EOF")
 
-            tag = self.buffer[self.pos]
+            tag = self.buf[self.pos]
             self.pos += 1
-            owned = True
 
-            if tag == T_NULL: val = None
-            elif tag == T_TRUE: val = True
-            elif tag == T_FALSE: val = False
-            elif tag == T_INT: val = c_zigzag_decode(self._read_varint())
+            if tag == T_NULL:
+                val = None
+
+            elif tag == T_TRUE:
+                val = True
+
+            elif tag == T_FALSE:
+                val = False
+
+            elif tag == T_INT:
+                val = zigzag_decode(self._read_varint())
+
             elif tag == T_FLOAT:
                 if self.pos + 8 > self.size:
-                    raise LensDecodeError("Unexpected end of buffer for float")
-                memcpy(&bits, &self.buffer[self.pos], 8)
+                    raise LensDecodeError("Truncated float")
+                memcpy(&bits, &self.buf[self.pos], 8)
                 self.pos += 8
                 bits = lens_be64(bits)
-                memcpy(&fval, &bits, 8)
-                val = fval
+                memcpy(&f, &bits, 8)
+                val = f
+
             elif tag == T_STR:
-                ln = <Py_ssize_t>self._read_varint()
+                ln = self._read_varint()
                 if self.pos + ln > self.size:
-                    raise LensDecodeError("Unexpected end of buffer for string")
-                start = self.pos
+                    raise LensDecodeError("Truncated string")
+                val = PyUnicode_DecodeUTF8(
+                    <char*>&self.buf[self.pos], ln, "strict"
+                )
                 self.pos += ln
-                val = PyUnicode_DecodeUTF8(<char *>&self.buffer[start], ln, "strict")
-                owned = True
+
             elif tag == T_BYTES:
-                ln = <Py_ssize_t>self._read_varint()
+                ln = self._read_varint()
                 if self.pos + ln > self.size:
-                    raise LensDecodeError("Unexpected end of buffer for bytes")
-                start = self.pos
+                    raise LensDecodeError("Truncated bytes")
+                val = self.buf[self.pos:self.pos + ln] if self.zero_copy \
+                      else bytes(self.buf[self.pos:self.pos + ln])
                 self.pos += ln
-                val = self.buffer[start:self.pos] if self.zero_copy else self.buffer[start:self.pos].tobytes()
-                owned = True
+
             elif tag == T_SYMREF:
                 val = self.symbols[self._read_varint()]
-                owned = False
+
             elif tag == T_TIME:
-                var_int = c_zigzag_decode(self._read_varint())
-                if self.ts_hook: val = self.ts_hook(var_int)
-                else: val = datetime.fromtimestamp(var_int / 1000.0, tz=UTC)
+                ln = zigzag_decode(self._read_varint())
+                val = self.ts_hook(ln) if self.ts_hook else \
+                      datetime.fromtimestamp(ln / 1000.0, tz=UTC)
+
             elif tag == T_EXT:
-                var_int = self._read_varint()
-                ln = <Py_ssize_t>self._read_varint()
-                start = self.pos
+                eid = self._read_varint()
+                ln = self._read_varint()
+                if self.pos + ln > self.size:
+                    raise LensDecodeError("Truncated ext payload")
+                payload = self.buf[self.pos:self.pos + ln]
                 self.pos += ln
-                val = self.ext_hook(var_int, self.buffer[start:self.pos]) if self.ext_hook else (var_int, self.buffer[start:self.pos])
+                val = self.ext_hook(eid, payload) if self.ext_hook else (eid, payload)
+
             elif tag == T_ARR:
-                var_int = self._read_varint()
-                if var_int == 0: val = []
-                else:
-                    stack.append(self._push_frame(PyList_New(var_int), var_int, False))
-                    continue
-            elif tag == T_OBJ:
-                var_int = self._read_varint()
-                if var_int == 0: val = {}
-                else:
-                    stack.append(self._push_frame(PyDict_New(), var_int, True))
-                    continue
+                ln = self._read_varint()
+                stack.append(DecodeFrame([None] * ln, ln, False))
+                continue
+
             elif tag == T_TUPLE:
-                var_int = self._read_varint()
-                stack.append(self._push_frame(PyTuple_New(var_int), var_int, False))
+                ln = self._read_varint()
+                stack.append(DecodeFrame([None] * ln, ln, False, is_tuple=True))
                 continue
+
             elif tag == T_SET:
-                var_int = self._read_varint()
-                stack.append(self._push_frame(PySet_New(None), var_int, False))
+                ln = self._read_varint()
+                stack.append(DecodeFrame(set(), ln, False))
                 continue
+
+            elif tag == T_OBJ:
+                ln = self._read_varint()
+                stack.append(DecodeFrame({}, ln, True))
+                continue
+
             else:
                 raise LensDecodeError(f"Unknown tag {tag}")
 
-            if stack:
-                self._fill_container(<DecodeFrame>stack[-1], val, owned)
-            else:
+            if not stack:
                 return val
 
-    cdef inline void _fill_container(self, DecodeFrame frame, object val, bint owned):
+            self._fill_parent(stack[-1], val)
+
+    cdef inline void _fill_parent(self, DecodeFrame frame, object val):
         if frame.is_dict:
             PyDict_SetItem(frame.container, frame.current_key, val)
             frame.current_key = None
-            if owned: Py_XDECREF(val)
-        elif isinstance(frame.container, list):
-            Py_INCREF(val)
-            PyList_SET_ITEM(frame.container, frame.list_idx, val)
-            frame.list_idx += 1
-        elif isinstance(frame.container, tuple):
-            Py_INCREF(val)
-            PyTuple_SET_ITEM(frame.container, frame.list_idx, val)
-            frame.list_idx += 1
-        else:  # set
-            PySet_Add(frame.container, val)
-            if owned: Py_XDECREF(val)
+        else:
+            if isinstance(frame.container, list):
+                frame.container[frame.index] = val
+                frame.index += 1
+            else:
+                PySet_Add(frame.container, val)
         frame.remaining -= 1
